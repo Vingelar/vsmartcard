@@ -12,29 +12,39 @@ Currently the following projects are part of Virtual Smart Card Architecture:
 - [PC/SC Relay](http://frankmorgner.github.io/vsmartcard/pcsc-relay/README.html)
 - [USB CCID Emulator](http://frankmorgner.github.io/vsmartcard/ccid/README.html)
 
-Please refer to [our project's website](http://frankmorgner.github.io/vsmartcard) for more information.
+Please refer to [the original project's website](http://frankmorgner.github.io/vsmartcard) for more information.
 
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/Vingelar/vsmartcard-umdf2/ci.yml?branch=master&label=Linux%2FmacOS&logo=github)](https://github.com/Vingelar/vsmartcard-umdf2/actions/workflows/ci.yml)
 
 The Windows `BixVReader` driver is not built in CI; it is built locally on Windows 11
 (see [Building BixVReader](#building-bixvreader-the-windows-umdf-driver-on-windows-11) below).
-Upstream CI badges (AppVeyor, Coverity) were removed because they pointed at
-`frankmorgner/vsmartcard` and did not reflect this fork.
 
-
-> **UMDF 2 port:** Development continues in the separate repository
-> [**Vingelar/vsmartcard-umdf2**](https://github.com/Vingelar/vsmartcard-umdf2).
-> This repository (`Vingelar/vsmartcard`) ships the **UMDF 1.9** driver with
-> Windows 11 build fixes only.
+> **Related repository:** The UMDF 1.x driver (legacy COM/ATL model) lives in
+> [Vingelar/vsmartcard](https://github.com/Vingelar/vsmartcard). **This repository**
+> is the standalone **UMDF 2.33** port.
 
 ---
 
-## Building `BixVReader` (the Windows UMDF driver) on Windows 11
+## Building `BixVReader` (UMDF 2) on Windows 11
 
-This fork (`Vingelar/vsmartcard`) contains a set of build-system fixes that
-make `virtualsmartcard/win32/BixVReader.sln` build out-of-the-box on a current
-Windows 11 machine with Visual Studio 2022 / 2026. The sections below explain
-*why* those fixes are necessary, *what* was changed, and *how* a third party
-can reproduce the build from a fresh clone.
+> **This repository ? `Vingelar/vsmartcard-umdf2`**
+>
+> `BixVReader` is ported here from UMDF 1.9 to **UMDF 2.33** (WDF handle/callback
+> API, same style as KMDF). The driver entry point is `DriverEntry` /
+> `FxDriverEntryUm` instead of `DllGetClassObject` + `IDriverEntry`.
+>
+> | Repository | UMDF version | Programming model |
+> | ---------- | ------------ | ----------------- |
+> | [Vingelar/vsmartcard](https://github.com/Vingelar/vsmartcard) | 1.9 | COM/ATL, `VirtualSCReader.idl`, `DriverCLSID` in INF |
+> | **`Vingelar/vsmartcard-umdf2` (here)** | **2.33** | WDF handles, no IDL/ATL, no `DriverCLSID` |
+>
+> You do **not** need the *C++ ATL* Visual Studio component for this repository.
+
+This repository contains the build-system fixes from `Vingelar/vsmartcard` plus
+the UMDF 2 driver rewrite, so `virtualsmartcard/win32/BixVReader.sln` builds
+out-of-the-box on a current Windows 11 machine with Visual Studio 2022 / 2026.
+The sections below explain *why* those fixes are necessary, *what* was changed,
+and *how* a third party can reproduce the build from a fresh clone.
 
 ### Why the upstream solution does not build on a modern Windows 11 box
 
@@ -99,8 +109,58 @@ The patches are intentionally minimal and live entirely under
 | `DevMsi/` (now a regular directory, was a git submodule)   | The upstream submodule pointed at `frankmorgner/DevMsi` and contained a hard-coded VS 2019 / SDK 10.0.19041.0 configuration. Carrying it as a submodule made the build fixes impossible to commit in this single fork, so it was vendored into the main tree. Inside `DevMsi/src/DevMsi/DevMsi.vcxproj` the `<PlatformToolset>` is now `$(DefaultPlatformToolset)` (auto-selects whatever toolset the installed VS provides), and `<WindowsTargetPlatformVersion>` was relaxed to `10.0` (MSBuild then picks the latest installed 10.x SDK). `DevMsi/src/Props/WIX.props` was fixed to use `$(WIX)SDK\inc` (the modern WiX layout). |
 | `.gitignore` (new, under `virtualsmartcard/win32/`)        | Excludes the portable WiX directory (`.tools/`), the test-signing assets (`TestCert/` and `BixVReader.cer`), MIDL by-products in the source tree, and the usual `bin/`, `obj/`, `x64/` MSBuild outputs.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-The fork **does not** modify any C/C++ source code. All driver behaviour
-is identical to upstream `frankmorgner/vsmartcard`.
+Build-system patches on [Vingelar/vsmartcard](https://github.com/Vingelar/vsmartcard)
+do not modify driver C/C++ source code. **This repository** additionally rewrites
+the driver glue for UMDF 2; the smart-card protocol logic is preserved.
+
+### UMDF 2 port (this repository)
+
+Microsoft deprecated UMDF 1.x; new driver work should target UMDF 2. This
+branch rewrites the framework integration while keeping the existing reader
+backends and IOCTL handling.
+
+**What changed in the driver**
+
+| Area | UMDF 1.x ([vsmartcard](https://github.com/Vingelar/vsmartcard)) | UMDF 2 (this repo) |
+| ---- | ------------------- | ----------------------------- |
+| Entry point | `DllMain` + `DllGetClassObject` ? `IDriverEntry` | `DriverEntry` ? `WdfDriverCreate` |
+| Device / queue | COM classes (`CMyDriver`, `CMyDevice`, `CMyQueue`) | `WDFDEVICE`, `WDFQUEUE`, `DEVICE_CONTEXT` |
+| I/O requests | `CComPtr<IWDFIoRequest>`, `IWDFMemory` | `WDFREQUEST`, `WdfRequestRetrieve*Buffer` |
+| Cancel | `IRequestCallbackCancel` | `WdfRequestMarkCancelable` + `EvtRequestCancel` |
+| INF | `UmdfLibraryVersion=1.9`, `DriverCLSID={...}` | `UmdfLibraryVersion=2.33.0`, no `DriverCLSID` |
+| Build | MIDL on `VirtualSCReader.idl`, `exports.def`, static ATL | Links `WdfDriverStubUm.lib` + `ntdll.lib`, no MIDL/ATL |
+
+**Removed files:** `DllMain.cpp`, `exports.def`, `VirtualSCReader.idl`
+
+**WDF headers:** UMDF 2.33 headers live under
+`C:\Program Files (x86)\Windows Kits\10\Include\wdf\umdf\2.33\`.
+The project sets explicit include/lib paths for that version.
+
+**INF encoding:** `BixVReader.inf` must be **ANSI or UTF-16 with BOM**.
+A UTF-16 file *without* BOM makes `inf2cat` fail with the misleading error
+*?No installation INF found in the root path of the driver?*. The committed
+INF is plain UTF-8/ANSI.
+
+**Clone and build this branch:**
+
+```powershell
+git clone https://github.com/Vingelar/vsmartcard-umdf2.git
+cd vsmartcard-umdf2\virtualsmartcard\win32
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Bootstrap-WiX314.ps1
+
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" `
+    .\BixVReader.sln `
+    /p:Configuration=Release /p:Platform=x64 `
+    /p:VisualStudioVersion=17.0 /m
+```
+
+Use `/p:VisualStudioVersion=17.0` when building with VS 2026 (18.x) so MSBuild
+loads `Microsoft.DriverKit.Build.Tasks.17.0.dll` from WDK 10.0.26100 instead of
+looking for a non-existent `18.0` task assembly.
+
+**Verify the UMDF 2 build:** `dumpbin /exports BixVReader\x64\Release\BixVReader.dll`
+should list `FxDriverEntryUm` (not `DllGetClassObject`). The stamped INF should
+contain `UmdfLibraryVersion = 2.33.0` and **no** `DriverCLSID` line.
 
 ### Prerequisites
 
@@ -110,8 +170,9 @@ is identical to upstream `frankmorgner/vsmartcard`.
    Enterprise* - all editions work. The following individual components must
    be ticked in the VS Installer:
    - *Desktop development with C++* (workload)
-   - *C++ ATL for the latest build tools* (ATL is required because BixVReader
-     sets `<UseOfAtl>Static</UseOfAtl>`)
+   - *C++ ATL for the latest build tools* ? **not required in this repository**
+     (UMDF 2 uses WDF, no ATL). Required only in
+     [Vingelar/vsmartcard](https://github.com/Vingelar/vsmartcard) (UMDF 1.x).
    - *MSVC v143 / v144 / v145 - VS C++ x64/x86 build tools* (whatever is
      current for your VS version)
    - *Windows 11 SDK (e.g. 10.0.26100.0)*
@@ -129,9 +190,9 @@ is identical to upstream `frankmorgner/vsmartcard`.
    ```
 
    This requires elevation (UAC prompt). After it has finished, you should
-   find `wudfddi.idl` at
-   `C:\Program Files (x86)\Windows Kits\10\Include\wdf\umdf\1.11\wudfddi.idl`
-   and `stampinf.exe` / `Inf2Cat.exe` under
+   find UMDF headers under `C:\Program Files (x86)\Windows Kits\10\Include\wdf\umdf\`
+   (this repository uses **`2.33\`**) and `stampinf.exe` / `Inf2Cat.exe` under
+   `stampinf.exe` / `Inf2Cat.exe` under
    `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\<arch>\`.
 
    If your Windows SDK version is different (for example `10.0.22621.x`),
@@ -144,11 +205,11 @@ is identical to upstream `frankmorgner/vsmartcard`.
 
 ### Build instructions
 
-After cloning *this* fork:
+After cloning this repository:
 
 ```powershell
-git clone https://github.com/Vingelar/vsmartcard.git
-cd vsmartcard\virtualsmartcard\win32
+git clone https://github.com/Vingelar/vsmartcard-umdf2.git
+cd vsmartcard-umdf2\virtualsmartcard\win32
 
 # 1. Download and extract the portable WiX 3.14 toolset into .tools\wix314.
 #    Idempotent: re-runs are no-ops once the toolset is present.
@@ -160,6 +221,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Bootstrap-WiX314.p
     .\BixVReader.sln `
     /p:Configuration=Release /p:Platform=x64 /m
 ```
+
+When building with VS 2026, append `/p:VisualStudioVersion=17.0`
+(see [UMDF 2 port](#umdf-2-port-this-repository) above).
 
 (If you use VS 2022, the MSBuild path is
 `C:\Program Files\Microsoft Visual Studio\2022\<Edition>\MSBuild\Current\Bin\MSBuild.exe`.)
@@ -237,5 +301,5 @@ issue [#324](https://github.com/frankmorgner/vsmartcard/issues/324)).
 This fork implements `SCARD_ATTR_CHANNEL_ID` in
 `Reader::IoSmartCardGetAttribute`, returning a PC/SC channel identifier derived
 from the device unit number. That does **not** mean the driver was completely
-non-functional on Windows 11 before — only that registration could fail at
+non-functional on Windows 11 before ? only that registration could fail at
 startup if this attribute was missing.
