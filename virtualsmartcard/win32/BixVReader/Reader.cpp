@@ -3,6 +3,11 @@
 #include "reader.h"
 #include "device.h"
 #include <winscard.h>
+
+#ifndef SCARD_CHANNEL_TYPE_PCSC
+#define SCARD_CHANNEL_TYPE_PCSC 0x00000002
+#endif
+
 #include "memory.h"
 #include <Sddl.h>
 #include "SectionLocker.h"
