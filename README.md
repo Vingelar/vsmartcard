@@ -21,6 +21,12 @@ The Windows `BixVReader` driver is not built in CI; it is built locally on Windo
 Upstream CI badges (AppVeyor, Coverity) were removed because they pointed at
 `frankmorgner/vsmartcard` and did not reflect this fork.
 
+
+> **UMDF 2 port:** Development continues in the separate repository
+> [**Vingelar/vsmartcard-umdf2**](https://github.com/Vingelar/vsmartcard-umdf2).
+> This repository (`Vingelar/vsmartcard`) ships the **UMDF 1.9** driver with
+> Windows 11 build fixes only.
+
 ---
 
 ## Building `BixVReader` (the Windows UMDF driver) on Windows 11
