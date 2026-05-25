@@ -192,8 +192,21 @@ bcdedit /set testsigning on
 
 A reboot is required for this change to take effect.
 
-After rebooting, copy the following three files into one folder on the
-target machine (or use them from the build output directly):
+#### Recommended install flow
+
+From `virtualsmartcard\win32`, build a fresh driver package and install it:
+
+```powershell
+# 1. Build (Release x64), stamp/sign INF, produce MSI
+powershell -ExecutionPolicy Bypass -File .\build-driver-package.ps1
+
+# 2. Install test cert + MSI (elevated)
+powershell -ExecutionPolicy Bypass -File .\finish-bix-install.ps1
+```
+
+`build-driver-package.ps1` copies the MSI next to `install_vpcd.bat` as
+`BixVReaderInstaller.msi`. Alternatively, after building, copy these three
+files into one folder:
 
 - `BixVReader.cer`
 - `BixVReaderInstaller.msi`
@@ -209,6 +222,51 @@ will:
    `root\BixVirtualReader`. Windows then loads `BixVReader.dll` via WUDFRd.
 
 To remove the driver, run `uninstall_vpcd.bat` (also as administrator).
+
+After installation, start the **virtual card emulator** (vpicc) so that PC/SC
+sees a card in the reader — see
+[Using vpicc (virtual card emulator)](#using-vpicc-virtual-card-emulator) below.
+
+#### Installation pitfalls (Windows 11)
+
+Several non-obvious issues can make `install_vpcd.bat` or the MSI fail with
+**exit code 1603** even when the solution builds successfully. This fork
+addresses them in the build system; the notes below explain what went wrong and
+how to recover.
+
+| Symptom | Typical cause | What to do |
+| ------- | ------------- | ---------- |
+| MSI **1603**, log shows `UpdateDriverForPlugAndPlayDevices` / **0x80070103** | Stamped INF used `[Standard.NTx64]` while the Manufacturer section declares **NTamd64**, so Windows finds no matching driver model | Fixed: `stampinf` now uses `-a amd64` on x64 builds and the source INF hard-codes `[Standard.NTamd64]`. Rebuild with `build-driver-package.ps1`. |
+| MSI **1603**, log shows `SetupDiGetINFClass` / **0xe0000100** | `stampinf` wrote the release INF as **UTF-16**; `Inf2Cat` and the installer cannot parse it | Fixed: post-stamp ASCII conversion in the build. Do **not** install an MSI built from a UTF-16 INF. |
+| Install fails immediately, no driver loaded | **Test signing** still off (`bcdedit` shows `testsigning No`) | Run `bcdedit /set testsigning on`, reboot, then install again. |
+| Repeated install failures, many `ROOT\SMARTCARDREADER\000x` devices in Device Manager | Each failed MSI attempt can leave **orphan device nodes** without a driver | Remove them (elevated): `pnputil /remove-device ROOT\SMARTCARDREADER\0001` (increment for each orphan), then reinstall. `finish-bix-install.ps1` does this automatically. |
+| Reader missing in PC/SC after “successful” install | Only the **reader driver** is installed; **vpicc** must connect to TCP port **35963** to emulate a card | Run `start-vpicc.ps1` (see below). |
+| `Inf2Cat` / build error “No installation INF found” | Wrong tool path (`inf2cat.exe` lives under the SDK **x86** bin directory, not x64) | Fixed in `Directory.Build.props` and `BixVReader.vcxproj`. |
+
+If installation still fails, inspect the MSI log (e.g. `install-final.log` in
+`virtualsmartcard\win32`) and `%SystemRoot%\INF\setupapi.dev.log` for lines
+containing `No matching drivers found` or `SetupDiGetINFClass`.
+
+### Using vpicc (virtual card emulator)
+
+On Windows, **BixVReader embeds vpcd** and listens on TCP port **35963**
+(`WUDFHost`). There is no separate `vpcd.exe`. The Python program **vpicc**
+(`vicc.in`) emulates the chip and connects to that port.
+
+Prerequisite (once): `py -3 -m pip install pyreadline3`
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start-vpicc.ps1
+```
+
+Default card type is ISO7816 (PIN **1234**). The PC/SC reader name is
+**Virtual Smart Card Architecture Virtual PCD 0**. Verify with
+`certutil -scinfo`.
+
+Port and reader names can be adjusted in `C:\Windows\BixVReader.ini`
+(`TCP_PORT`, `NumReaders`, …). vpicc must use the same port (`-P 35963` by
+default). Run `py -3 …\vicc.in --help` for card types (`nPA`, `ePass`,
+`relay`, …) and other options.
 
 ### Security warning
 
@@ -237,5 +295,5 @@ issue [#324](https://github.com/frankmorgner/vsmartcard/issues/324)).
 This fork implements `SCARD_ATTR_CHANNEL_ID` in
 `Reader::IoSmartCardGetAttribute`, returning a PC/SC channel identifier derived
 from the device unit number. That does **not** mean the driver was completely
-non-functional on Windows 11 before � only that registration could fail at
+non-functional on Windows 11 before — only that registration could fail at
 startup if this attribute was missing.
